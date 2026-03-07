@@ -15,7 +15,9 @@
 
 ## 1. 插件概述
 
+```cpp
 **Performance Analyzer** 是一款专为 Unreal Engine 5.7 设计的综合性能优化工具集，旨在帮助开发者快速识别和解决项目中的性能瓶颈。
+```
 
 ### 核心特性
 
@@ -67,6 +69,7 @@
 
 2. **复制到项目**
 
+```cpp
 YourProject/
    └── Plugins/
        └── PerformanceAnalyzer/
@@ -74,6 +77,7 @@ YourProject/
            ├── Source/
            ├── Resources/
            └── Content/
+```
 
 3. **启用插件**
 
@@ -116,6 +120,7 @@ YourProject/
 
 ### 典型工作流程
 
+```cpp
 打开场景 → 运行性能分析 → 查看报告 → 发现问题
     ↓
 问题类型判断:
@@ -124,6 +129,7 @@ YourProject/
 └── 其他问题 → 手动优化
     ↓
 重新分析 → 导出报告 → 完成
+```
 
 ---
 
