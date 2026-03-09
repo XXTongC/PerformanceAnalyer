@@ -95,70 +95,51 @@ void FPerformanceMonitor::SamplePerformance()
     }
 }
 
+void FPerformanceMonitor::RequestGPUTime()
+{
+    ENQUEUE_RENDER_COMMAND(GetGPUFrameTime)(
+        [this](FRHICommandListImmediate& RHICmdList)
+        {
+            uint32 GPUCycles = RHIGetGPUFrameCycles();
+            if (GPUCycles > 0)
+            {
+                CachedGPUTimeMS.store(
+                    FPlatformTime::ToMilliseconds(GPUCycles)
+                );
+                bGPUTimeValid.store(true);
+            }
+        }
+    );
+}
+    
+
 bool FPerformanceMonitor::TryGetRHIStats(FPerformanceSample& OutSample)
 {
     // Level 1: 从RHI获取最准确的数据
     
-    #if STATS
-    
-    // 获取DrawCall数量
+#if STATS
+        
     OutSample.DrawCalls = GNumDrawCallsRHI[0];
-    
-    // 获取Primitive数量
     OutSample.Primitives = GNumPrimitivesDrawnRHI[0];
-    
-    // 获取GPU时间
-    bool bGPUTimeValid = false;
-    float GPUTime = 0.0f;
-    
-    ENQUEUE_RENDER_COMMAND(GetGPUFrameTime)(
-        [&bGPUTimeValid, &GPUTime](FRHICommandListImmediate& RHICmdList)
-        {
-            // 获取上一帧的GPU时间（以周期数表示）
-            uint32 GPUCycles = RHIGetGPUFrameCycles();
-            if (GPUCycles > 0)
-            {
-                // 转换为毫秒
-                GPUTime = FPlatformTime::ToMilliseconds(GPUCycles);
-                bGPUTimeValid = true;
-            }
-        }
-    );
-    
-    // 等待渲染线程完成
-    FlushRenderingCommands();
-    
-    if (bGPUTimeValid)
+        
+    // 使用缓存的GPU时间（无阻塞）
+    if (bGPUTimeValid.load())
     {
-        OutSample.GPUTimeMS = GPUTime;
+        OutSample.GPUTimeMS = CachedGPUTimeMS.load();
     }
     else
     {
         OutSample.GPUTimeMS = FApp::GetDeltaTime() * 1000.0f;
     }
-    
-    // 获取线程时间
-    OutSample.GameThreadTimeMS = FPlatformTime::ToMilliseconds(GGameThreadTime);
-    OutSample.RenderThreadTimeMS = FPlatformTime::ToMilliseconds(GRenderThreadTime);
-    
-    // 帧时间
-    OutSample.FrameTimeMS = FApp::GetDeltaTime() * 1000.0f;
-    
-    // 三角形数
-    OutSample.Triangles = CalculateSceneTriangles();
-    
-    // 内存使用
-    FPlatformMemoryStats MemStats = FPlatformMemory::GetStats();
-    OutSample.MemoryUsedMB = MemStats.UsedPhysical / (1024.0f * 1024.0f);
-    
-    // 如果DrawCall和Primitive都有效，认为RHI数据可用
+        
+    // 在后台请求下一帧的GPU时间
+    RequestGPUTime();
+        
     return (OutSample.DrawCalls > 0 || OutSample.Primitives > 0);
-    
-    #else
-    
+        
+#else
     return false;
-    
-    #endif
+#endif
 }
 
 bool FPerformanceMonitor::TryGetEngineStats(FPerformanceSample& OutSample)

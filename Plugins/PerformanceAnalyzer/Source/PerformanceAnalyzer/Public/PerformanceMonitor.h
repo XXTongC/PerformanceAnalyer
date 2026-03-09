@@ -108,6 +108,8 @@ private:
     /** 辅助函数：计算场景Primitive数 */
     int32 CalculateScenePrimitives();
     
+    
+    void RequestGPUTime();
 private:
     bool bIsEnabled;
     TArray<FPerformanceSample> HistorySamples;
@@ -115,5 +117,7 @@ private:
     int32 CurrentSampleIndex;
     float AccumulatedTime;
     float SampleInterval;
-    EPerformanceDataSource CurrentDataSource;
+    EPerformanceDataSource CurrentDataSource;   
+    std::atomic<float> CachedGPUTimeMS;
+    std::atomic<bool> bGPUTimeValid;
 };
