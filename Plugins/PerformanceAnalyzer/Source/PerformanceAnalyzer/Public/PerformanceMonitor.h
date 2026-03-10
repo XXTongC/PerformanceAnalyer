@@ -40,6 +40,9 @@ struct FPerformanceSample
     float MemoryUsedMB = 0.0f;
     
     UPROPERTY(BlueprintReadOnly, Category = "Performance")
+    float FPS = 0.0f;
+    
+    UPROPERTY(BlueprintReadOnly, Category = "Performance")
     bool bIsEstimated = false;
 };
 
@@ -89,28 +92,35 @@ public:
     /** 获取当前数据源类型 */
     EPerformanceDataSource GetCurrentDataSource() const { return CurrentDataSource; }
     
+    /** 测试方法：手动触发回调 */
+    void TestActorSpawnedCallback(AActor* TestActor);
+    void TestActorDestroyedCallback(AActor* TestActor);
 private:
     /** 采样性能数据 */
     void SamplePerformance();
     
+    // 三级数据获取
     /** Level 1: 尝试从RHI获取数据 */
     bool TryGetRHIStats(FPerformanceSample& OutSample);
-    
     /** Level 2: 尝试从Engine统计获取数据 */
     bool TryGetEngineStats(FPerformanceSample& OutSample);
-    
     /** Level 3: 场景分析估算 */
     void GetEstimatedStats(FPerformanceSample& OutSample);
     
     /** 辅助函数：计算场景三角形数 */
     int32 CalculateSceneTriangles();
-    
     /** 辅助函数：计算场景Primitive数 */
     int32 CalculateScenePrimitives();
-    
-    
+    void UpdateSceneCache();
+    /** 辅助函数：用于第一级异步获取GPU信息 */
     void RequestGPUTime();
+   
 private:
+     
+    // 事件回调，用于监控新Actor生成与销毁
+    void OnActorSpawned(AActor* Actor);
+    void OnActorDestroyed(AActor* Actor);
+    
     bool bIsEnabled;
     TArray<FPerformanceSample> HistorySamples;
     static const int32 MaxHistorySamples = 3600;
@@ -120,4 +130,21 @@ private:
     EPerformanceDataSource CurrentDataSource;   
     std::atomic<float> CachedGPUTimeMS;
     std::atomic<bool> bGPUTimeValid;
+    
+    // 场景缓存统计
+    int32 CachedTriangles;
+    int32 CachedPrimitives;
+    double LastCacheUpdateTime;
+    bool bCacheDirty;
+    
+    // 最小缓存更新间隔
+    float MinCacheUpdateInterval;
+    
+    
+    // 事件监听句柄
+    FDelegateHandle OnActorSpawnedHandle;
+    FDelegateHandle OnActorDestroyedHandle;
+    bool bEventListenersInitialized;
+    void InitializeEventListeners();
+    
 };

@@ -28,7 +28,7 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "MaterialOptimizer.h"
 #include "SMaterialOptimizerWidget.h"
-
+#include "EngineUtils.h"
 
 static const FName PerformanceAnalyzerTabName("PerformanceAnalyzer");
 static const FName PerformanceMonitorTabName("PerformanceMonitor");
@@ -129,6 +129,50 @@ void FPerformanceAnalyzerModule::StartupModule()
     
     UToolMenus::RegisterStartupCallback(
         FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FPerformanceAnalyzerModule::RegisterMenus));
+    
+    IConsoleManager::Get().RegisterConsoleCommand(
+       TEXT("PerfMon.TestSpawn"),
+       TEXT("Test actor spawned callback"),
+       FConsoleCommandDelegate::CreateLambda([this]()
+       {
+           if (PerformanceMonitor)
+           {
+               UWorld* World = GEngine->GetWorld();
+               if (World)
+               {
+                   AActor* TestActor = World->SpawnActor<AActor>();
+                   PerformanceMonitor->TestActorSpawnedCallback(TestActor);
+                   UE_LOG(LogTemp, Log, TEXT("Test: Spawned actor %s"), *TestActor->GetName());
+               }
+           }
+       })
+   );
+    
+    IConsoleManager::Get().RegisterConsoleCommand(
+        TEXT("PerfMon.TestDestroy"),
+        TEXT("Test actor destroyed callback"),
+        FConsoleCommandDelegate::CreateLambda([this]()
+        {
+            if (PerformanceMonitor)
+            {
+                UWorld* World = GEngine->GetWorld();
+                if (World)
+                {
+                    // 销毁最后一个生成的Actor
+                    for (TActorIterator<AActor> It(World); It; ++It)
+                    {
+                        if (*It && !It->IsA<APlayerController>())
+                        {
+                            PerformanceMonitor->TestActorDestroyedCallback(*It);
+                            It->Destroy();
+                            UE_LOG(LogTemp, Log, TEXT("Test: Destroyed actor %s"), *It->GetName());
+                            break;
+                        }
+                    }
+                }
+            }
+        })
+    );
     
     UE_LOG(LogTemp, Log, TEXT("PerformanceAnalyzer Module Started"));
 }

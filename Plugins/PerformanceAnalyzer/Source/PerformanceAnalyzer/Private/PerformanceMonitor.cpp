@@ -16,14 +16,73 @@ FPerformanceMonitor::FPerformanceMonitor()
     , AccumulatedTime(0.0f)
     , SampleInterval(1.0f / 60.0f)
     , CurrentDataSource(EPerformanceDataSource::Estimated)
+    , CachedTriangles(0)
+    , CachedPrimitives(0)
+    , LastCacheUpdateTime(0.0)
+    , bCacheDirty(true)
+    , MinCacheUpdateInterval(0.5f)
+    , bEventListenersInitialized(false)
 {
     HistorySamples.Reserve(MaxHistorySamples);
+    
+    // 注册事件监听
+    UE_LOG(LogTemp, Log, TEXT("Performance Monitor: Constructor called"));
 }
 
 FPerformanceMonitor::~FPerformanceMonitor()
 {
+    // 取消事件监听
+    if (bEventListenersInitialized && GEngine)
+    {
+        GEngine->OnLevelActorAdded().Remove(OnActorSpawnedHandle);
+        GEngine->OnLevelActorDeleted().Remove(OnActorDestroyedHandle);
+        
+        UE_LOG(LogTemp, Log, TEXT("Performance Monitor: Event listeners unregistered"));
+    }
 }
+void FPerformanceMonitor::InitializeEventListeners()
+{
 
+    // 防止重复初始化
+    if (bEventListenersInitialized)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Performance Monitor: Event listeners already initialized"));
+        return;
+    }
+    
+    // 检查 GEngine 是否可用
+    if (!GEngine)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Performance Monitor: GEngine is not available yet"));
+        return;
+    }
+    
+    UE_LOG(LogTemp, Log, TEXT("Performance Monitor: Attempting to register event listeners..."));
+    
+    // 检查委托是否有效
+   
+     UE_LOG(LogTemp, Log, TEXT("Performance Monitor: OnLevelActorAdded delegate valid: %s"), 
+        GEngine->OnLevelActorAdded().IsBound() ? TEXT("Yes") : TEXT("No (empty)"));
+    UE_LOG(LogTemp, Log, TEXT("Performance Monitor: OnLevelActorDeleted delegate valid: %s"), 
+        GEngine->OnLevelActorDeleted().IsBound() ? TEXT("Yes") : TEXT("No (empty)"));
+    
+    
+        // 注册事件监听
+    OnActorSpawnedHandle = GEngine->OnLevelActorAdded().AddRaw(
+        this, &FPerformanceMonitor::OnActorSpawned);
+    OnActorDestroyedHandle = GEngine->OnLevelActorDeleted().AddRaw(
+        this, &FPerformanceMonitor::OnActorDestroyed);
+    
+    bEventListenersInitialized = true;
+    
+    
+    UE_LOG(LogTemp, Log, TEXT("Performance Monitor: Event listeners registered successfully"));
+    UE_LOG(LogTemp, Log, TEXT("Performance Monitor: OnActorSpawned handle valid: %s"), 
+        OnActorSpawnedHandle.IsValid() ? TEXT("Yes") : TEXT("No"));
+    UE_LOG(LogTemp, Log, TEXT("Performance Monitor: OnActorDestroyed handle valid: %s"), 
+        OnActorDestroyedHandle.IsValid() ? TEXT("Yes") : TEXT("No"));
+
+}
 TStatId FPerformanceMonitor::GetStatId() const
 {
     RETURN_QUICK_DECLARE_CYCLE_STAT(FPerformanceMonitor, STATGROUP_Tickables);
@@ -31,6 +90,10 @@ TStatId FPerformanceMonitor::GetStatId() const
 
 void FPerformanceMonitor::Tick(float DeltaTime)
 {
+    if (!bEventListenersInitialized&&GEngine)
+    {
+        InitializeEventListeners();
+    }
     if (!bIsEnabled)
     {
         return;
@@ -47,18 +110,78 @@ void FPerformanceMonitor::Tick(float DeltaTime)
 
 void FPerformanceMonitor::SetEnabled(bool bEnabled)
 {
+    UE_LOG(LogTemp, Log, TEXT("Performance Monitor: SetEnabled called with bEnabled=%s"), 
+        bEnabled ? TEXT("true") : TEXT("false"));
     bIsEnabled = bEnabled;
     
     if (bEnabled)
     {
+        if (!bEventListenersInitialized)
+        {
+            UE_LOG(LogTemp, Log, TEXT("Performance Monitor: Initializing event listeners..."));
+            InitializeEventListeners();
+        }else{
+            UE_LOG(LogTemp, Log, TEXT("Performance Monitor: Event listeners already initialized"));
+        }
         UE_LOG(LogTemp, Log, TEXT("Performance Monitor: Enabled"));
         ClearHistory();
+        bCacheDirty = true;
+        UpdateSceneCache();
     }
     else
     {
         UE_LOG(LogTemp, Log, TEXT("Performance Monitor: Disabled"));
     }
 }
+
+void FPerformanceMonitor::OnActorSpawned(AActor* Actor)
+{
+    if (!Actor)
+    {
+        return;
+    }
+    
+    if (!bIsEnabled)
+    {
+        return;
+    }
+    
+    bCacheDirty = true;
+    UE_LOG(LogTemp, Warning, TEXT("Performance Monitor: Scene cache invalidated (Actor spawned)"));
+}
+
+void FPerformanceMonitor::UpdateSceneCache()
+{
+    double CurrentTime = FPlatformTime::Seconds();
+    
+    if (bCacheDirty && (CurrentTime - LastCacheUpdateTime > MinCacheUpdateInterval))
+    {
+        int32 OldTriangles = CachedTriangles;
+        int32 OldPrimitives = CachedPrimitives;
+
+        CachedTriangles = CalculateSceneTriangles();
+        CachedPrimitives = CalculateScenePrimitives();
+        LastCacheUpdateTime = CurrentTime;
+        bCacheDirty = false;
+
+        UE_LOG(LogTemp, Warning, 
+            TEXT("UpdateSceneCache: Triangles: %d->%d, Primitives: %d->%d, bCacheDirty was true"),
+            OldTriangles, CachedTriangles, OldPrimitives, CachedPrimitives);
+    }
+    else if (!bCacheDirty)
+    {
+        UE_LOG(LogTemp, Verbose, 
+            TEXT("UpdateSceneCache: Cache not dirty, using cached values - Triangles=%d, Primitives=%d"),
+            CachedTriangles, CachedPrimitives);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Verbose, 
+            TEXT("UpdateSceneCache: Update interval not reached (%.2f < %.2f)"),
+            CurrentTime - LastCacheUpdateTime, MinCacheUpdateInterval);
+    }
+}
+
 
 void FPerformanceMonitor::SamplePerformance()
 {
@@ -115,13 +238,36 @@ void FPerformanceMonitor::RequestGPUTime()
 
 bool FPerformanceMonitor::TryGetRHIStats(FPerformanceSample& OutSample)
 {
-    // Level 1: 从RHI获取最准确的数据
     
+    // Level 1: 从RHI获取最准确的数据
+    OutSample.FrameTimeMS = FApp::GetDeltaTime() * 1000.0f;
+    OutSample.FPS = OutSample.FrameTimeMS > 0.0f ? 1000.0f / OutSample.FrameTimeMS : 0.0f;
+    
+    // 线程时间
+    OutSample.GameThreadTimeMS = FPlatformTime::ToMilliseconds(GGameThreadTime);
+    OutSample.RenderThreadTimeMS = FPlatformTime::ToMilliseconds(GRenderThreadTime);
+    
+    // 场景统计
+    UpdateSceneCache();
+    OutSample.Triangles = CachedTriangles;
+    OutSample.Primitives = CachedPrimitives;
+    
+    UE_LOG(LogTemp, Warning, 
+       TEXT("TryGetRHIStats: Before STATS block - Triangles=%d, Primitives=%d"),
+       OutSample.Triangles, OutSample.Primitives);
+    
+    // 内存使用
+    FPlatformMemoryStats MemStats = FPlatformMemory::GetStats();
+    OutSample.MemoryUsedMB = MemStats.UsedPhysical / (1024.0f * 1024.0f);
 #if STATS
         
     OutSample.DrawCalls = GNumDrawCallsRHI[0];
     OutSample.Primitives = GNumPrimitivesDrawnRHI[0];
-        
+      
+    UE_LOG(LogTemp, Warning, 
+        TEXT("TryGetRHIStats: After STATS block - Triangles=%d, Primitives=%d, DrawCalls=%d"),
+        OutSample.Triangles, OutSample.Primitives, OutSample.DrawCalls);
+    
     // 使用缓存的GPU时间（无阻塞）
     if (bGPUTimeValid.load())
     {
@@ -134,10 +280,12 @@ bool FPerformanceMonitor::TryGetRHIStats(FPerformanceSample& OutSample)
         
     // 在后台请求下一帧的GPU时间
     RequestGPUTime();
-        
     return (OutSample.DrawCalls > 0 || OutSample.Primitives > 0);
         
 #else
+    OutSample.DrawCalls = OutSample.Primitives;
+    OutSample.Primitives = CachedPrimitives;
+    OutSample.GPUTimeMS = OutSample.FrameTimeMS;
     return false;
 #endif
 }
@@ -169,17 +317,17 @@ bool FPerformanceMonitor::TryGetEngineStats(FPerformanceSample& OutSample)
     OutSample.GameThreadTimeMS = FPlatformTime::ToMilliseconds(GGameThreadTime);
     OutSample.RenderThreadTimeMS = FPlatformTime::ToMilliseconds(GRenderThreadTime);
     
-    // DrawCall和Primitive（从场景估算）
-    OutSample.Primitives = CalculateScenePrimitives();
-    OutSample.DrawCalls = OutSample.Primitives; // 粗略估计
-    
-    // 三角形数
-    OutSample.Triangles = CalculateSceneTriangles();
+    // 使用缓存的场景统计
+    UpdateSceneCache();
+    OutSample.Primitives = CachedPrimitives;
+    OutSample.DrawCalls = CachedPrimitives; 
+    OutSample.Triangles = CachedTriangles;
     
         // 内存使用
     FPlatformMemoryStats MemStats = FPlatformMemory::GetStats();
     OutSample.MemoryUsedMB = MemStats.UsedPhysical / (1024.0f * 1024.0f);
     
+    OutSample.FPS = AverageFPS;
     // 如果能获取到有效的FPS，认为Engine统计可用
     return (AverageFPS > 0.0f);
 }
@@ -199,14 +347,17 @@ void FPerformanceMonitor::GetEstimatedStats(FPerformanceSample& OutSample)
     OutSample.RenderThreadTimeMS = FPlatformTime::ToMilliseconds(GRenderThreadTime);
     
     // 场景统计
-    OutSample.Primitives = CalculateScenePrimitives();
-    OutSample.DrawCalls = OutSample.Primitives;
-    OutSample.Triangles = CalculateSceneTriangles();
+    UpdateSceneCache();
+    OutSample.Primitives = CachedPrimitives;
+    OutSample.DrawCalls = CachedPrimitives;
+    OutSample.Triangles = CachedTriangles;
     
     // 内存使用
     FPlatformMemoryStats MemStats = FPlatformMemory::GetStats();
     OutSample.MemoryUsedMB = MemStats.UsedPhysical / (1024.0f * 1024.0f);
+    OutSample.FPS = OutSample.FrameTimeMS > 0.0F ? 1000.0f / OutSample.FrameTimeMS : 0.0f;
 }
+
 
 
 
@@ -216,22 +367,47 @@ int32 FPerformanceMonitor::CalculateSceneTriangles()
     
     UWorld* World = nullptr;
     
+    if (GEngine)
+    {
+        // 尝试获取PIE World（Play In Editor）
+        for (const FWorldContext& Context : GEngine->GetWorldContexts())
+        {
+            if (Context.WorldType == EWorldType::PIE || Context.WorldType == EWorldType::Game)
+            {
+                World = Context.World();
+                UE_LOG(LogTemp, Warning, TEXT("CalculateSceneTriangles: Found PIE/Game World"));
+                break;
+            }
+        }
+        
+        // 如果没有PIE World，尝试获取编辑器World
+        if (!World)
+        {
 #if WITH_EDITOR
-    if (GEditor && GEditor->GetEditorWorldContext().World())
-    {
-        World = GEditor->GetEditorWorldContext().World();
-    }
+            if (GEditor && GEditor->GetEditorWorldContext().World())
+            {
+                World = GEditor->GetEditorWorldContext().World();
+                UE_LOG(LogTemp, Warning, TEXT("CalculateSceneTriangles: Using Editor World"));
+            }
 #endif
-    
-    if (!World && GEngine)
-    {
-        World = GEngine->GetWorld();
+        }
+
+        if (!World && GEngine)
+        {
+            World = GEngine->GetWorld();
+        }
     }
+    
     
     if (!World)
     {
+        UE_LOG(LogTemp, Warning, TEXT("CalculateSceneTriangles: World is nullptr!"));
         return 0;
     }
+    
+    int32 ActorCount = 0;
+    int32 MeshComponentCount = 0;
+    int32 ValidMeshCount = 0;
     
     // 遍历所有静态网格组件
     for (TActorIterator<AActor> It(World); It; ++It)
@@ -242,8 +418,12 @@ int32 FPerformanceMonitor::CalculateSceneTriangles()
             continue;
         }
         
+        ActorCount++;
+        
         TArray<UStaticMeshComponent*> MeshComponents;
         Actor->GetComponents<UStaticMeshComponent>(MeshComponents);
+        
+        MeshComponentCount += MeshComponents.Num();
         
         for (UStaticMeshComponent* MeshComp : MeshComponents)
         {
@@ -257,22 +437,40 @@ int32 FPerformanceMonitor::CalculateSceneTriangles()
             // 安全检查RenderData
             if (!Mesh->GetRenderData())
             {
+                UE_LOG(LogTemp, Warning, 
+                    TEXT("CalculateSceneTriangles: Mesh '%s' has no RenderData"), 
+                    *Mesh->GetName());
                 continue;
             }
             
-            // 直接访问LODResources（不要创建TArray引用）
+            // 直接访问LODResources
             FStaticMeshRenderData* RenderData = Mesh->GetRenderData();
             
             // 检查LOD数量
             if (RenderData->LODResources.Num() == 0)
             {
+                UE_LOG(LogTemp, Warning, 
+                    TEXT("CalculateSceneTriangles: Mesh '%s' has no LOD resources"), 
+                    *Mesh->GetName());
                 continue;
             }
             
             // 使用LOD0（最高质量）
-            TotalTriangles += RenderData->LODResources[0].GetNumTriangles();
+            int32 MeshTriangles = RenderData->LODResources[0].GetNumTriangles();
+            TotalTriangles += MeshTriangles;
+            ValidMeshCount++;
+            
+            UE_LOG(LogTemp, Verbose, 
+                TEXT("CalculateSceneTriangles: Mesh '%s' has %d triangles"), 
+                *Mesh->GetName(), MeshTriangles);
         }
+        
+        
     }
+
+    UE_LOG(LogTemp, Warning, 
+        TEXT("CalculateSceneTriangles: ActorCount=%d, MeshComponentCount=%d, ValidMeshCount=%d, TotalTriangles=%d"),
+        ActorCount, MeshComponentCount, ValidMeshCount, TotalTriangles);
     
     return TotalTriangles;
 }
@@ -283,17 +481,33 @@ int32 FPerformanceMonitor::CalculateScenePrimitives()
     
     UWorld* World = nullptr;
     
+if (GEngine)
+    {
+        for (const FWorldContext& Context : GEngine->GetWorldContexts())
+        {
+            if (Context.WorldType == EWorldType::PIE || Context.WorldType == EWorldType::Game)
+            {
+                World = Context.World();
+                break;
+            }
+        }
+        
+        if (!World)
+        {
 #if WITH_EDITOR
-    if (GEditor && GEditor->GetEditorWorldContext().World())
-    {
-        World = GEditor->GetEditorWorldContext().World();
-    }
+            if (GEditor && GEditor->GetEditorWorldContext().World())
+            {
+                World = GEditor->GetEditorWorldContext().World();
+            }
 #endif
-    
-    if (!World && GEngine)
-    {
-        World = GEngine->GetWorld();
+        }
+        
+        if (!World)
+        {
+            World = GEngine->GetWorld();
+        }
     }
+    
     
     if (!World)
     {
@@ -437,4 +651,36 @@ int32 FPerformanceMonitor::GetAverageDrawCalls() const
     }
     
     return TotalDrawCalls / HistorySamples.Num();
+}
+
+void FPerformanceMonitor::OnActorDestroyed(AActor* Actor)
+{
+    if (!Actor)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Performance Monitor: OnActorDestroyed called with nullptr Actor"));
+        return;
+    }
+    
+    UE_LOG(LogTemp, Verbose, TEXT("Performance Monitor: OnActorDestroyed called for Actor: %s"), *Actor->GetName());
+    
+    if (!bIsEnabled)
+    {
+            
+        return;
+    }
+    
+    bCacheDirty = true;
+    UE_LOG(LogTemp, Verbose, TEXT("Performance Monitor: Scene cache invalidated (Actor destroyed)"));
+}
+
+void FPerformanceMonitor::TestActorSpawnedCallback(AActor* TestActor)
+{
+    UE_LOG(LogTemp, Log, TEXT("Performance Monitor: Manual test - OnActorSpawned"));
+    OnActorSpawned(TestActor);
+}
+
+void FPerformanceMonitor::TestActorDestroyedCallback(AActor* TestActor)
+{
+    UE_LOG(LogTemp, Log, TEXT("Performance Monitor: Manual test - OnActorDestroyed"));
+    OnActorDestroyed(TestActor);
 }
