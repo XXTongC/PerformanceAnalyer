@@ -228,6 +228,7 @@ Level 3: Scene Estimation (估算)
 
 **核心指标**
 
+```cpp
 FPerformanceSample
 ├── Timestamp            // 时间戳
 ├── FrameTimeMS          // 帧时间（毫秒）
@@ -238,6 +239,7 @@ FPerformanceSample
 ├── Primitives           // Primitive 数量
 ├── Triangles            // 三角形数量
 └── MemoryUsageMB        // 内存使用（MB）
+```
 
 ### 5.3 LOD 自动生成器（支持undo/redo）
 
